@@ -2,10 +2,12 @@
 
 This module demonstrates industry-best practices for Typer CLIs:
 - Fully typed with Annotated
+- Global --data-dir option stored in ctx.obj (standard Typer pattern)
+- Context injection uses bare `ctx: typer.Context` for full compatibility with typer.testing
 - Rich console output with tables
-- Persistent JSON storage using typer.get_app_dir()
+- Persistent JSON storage
 - Enums for constrained choices
-- Interactive editing with typer.prompt
+- Interactive editing with typer.prompt/confirm
 - Version callback, confirmations, and proper error handling
 - 100% basedpyright-compatible (recommended mode)
 """
@@ -48,25 +50,25 @@ class Status(str, Enum):
     ALL = "all"
 
 
-def get_db_path() -> Path:
-    """Return path to the JSON database in the user config directory."""
-    app_dir = Path(typer.get_app_dir("taskly"))
+def get_db_path(ctx: typer.Context) -> Path:
+    """Return path to the JSON database. Uses --data-dir from ctx.obj if provided."""
+    app_dir: Path = ctx.obj["data_dir"]
     app_dir.mkdir(parents=True, exist_ok=True)
     return app_dir / "tasks.json"
 
 
-def load_tasks() -> list[dict[str, Any]]:
+def load_tasks(ctx: typer.Context) -> list[dict[str, Any]]:
     """Load tasks from the JSON database. Returns empty list if file doesn't exist."""
-    db_path = get_db_path()
+    db_path = get_db_path(ctx)
     if not db_path.exists():
         return []
     with db_path.open(encoding="utf-8") as f:
         return json.load(f)
 
 
-def save_tasks(tasks: list[dict[str, Any]]) -> None:
+def save_tasks(ctx: typer.Context, tasks: list[dict[str, Any]]) -> None:
     """Save tasks to the JSON database."""
-    db_path = get_db_path()
+    db_path = get_db_path(ctx)
     with db_path.open("w", encoding="utf-8") as f:
         json.dump(tasks, f, indent=2, ensure_ascii=False)
 
@@ -95,6 +97,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option(
@@ -105,12 +108,25 @@ def main(
             help="Show version and exit.",
         ),
     ] = False,
+    data_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--data-dir",
+            help="Custom directory for tasks.json storage (defaults to user app dir)",
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ] = None,
 ) -> None:
-    """Taskly CLI entry point."""
+    """Taskly CLI entry point with global --data-dir support."""
+    # Store data directory in ctx.obj so every command can access it
+    ctx.obj = {"data_dir": data_dir or Path(typer.get_app_dir("taskly"))}
 
 
 @app.command()
 def add(
+    ctx: typer.Context,
     description: Annotated[str, typer.Argument(help="Task description")],
     priority: Annotated[
         Priority,
@@ -131,7 +147,7 @@ def add(
     ] = None,
 ) -> None:
     """Add a new task."""
-    tasks = load_tasks()
+    tasks = load_tasks(ctx)
     task_id = get_next_id(tasks)
 
     # Validate due date if provided
@@ -151,13 +167,14 @@ def add(
     }
 
     tasks.append(task)
-    save_tasks(tasks)
+    save_tasks(ctx, tasks)
 
     typer.secho(f"✅ Task #{task_id} added", fg=typer.colors.GREEN)
 
 
 @app.command()
 def list(
+    ctx: typer.Context,
     status: Annotated[
         Status,
         typer.Option(
@@ -177,7 +194,7 @@ def list(
     ] = None,
 ) -> None:
     """List tasks with optional filters. Use --status completed to show completed tasks."""
-    tasks = load_tasks()
+    tasks = load_tasks(ctx)
 
     # Apply filters
     filtered: list[dict[str, Any]] = []
@@ -221,10 +238,11 @@ def list(
 
 @app.command()
 def complete(
+    ctx: typer.Context,
     task_id: Annotated[int, typer.Argument(help="ID of the task to mark complete")],
 ) -> None:
     """Mark a task as completed."""
-    tasks = load_tasks()
+    tasks = load_tasks(ctx)
     task = find_task(tasks, task_id)
     if task is None:
         typer.secho(f"❌ Task #{task_id} not found", fg=typer.colors.RED)
@@ -235,16 +253,17 @@ def complete(
         return
 
     task["completed"] = True
-    save_tasks(tasks)
+    save_tasks(ctx, tasks)
     typer.secho(f"✅ Task #{task_id} completed", fg=typer.colors.GREEN)
 
 
 @app.command()
 def edit(
+    ctx: typer.Context,
     task_id: Annotated[int, typer.Argument(help="ID of the task to edit")],
 ) -> None:
     """Interactively edit an existing task (description, priority, due date, or status)."""
-    tasks = load_tasks()
+    tasks = load_tasks(ctx)
     task = find_task(tasks, task_id)
     if task is None:
         typer.secho(f"❌ Task #{task_id} not found", fg=typer.colors.RED)
@@ -290,12 +309,13 @@ def edit(
     new_completed = typer.confirm("Mark as completed?", default=current_completed)
     task["completed"] = new_completed
 
-    save_tasks(tasks)
+    save_tasks(ctx, tasks)
     typer.secho(f"✅ Task #{task_id} updated successfully", fg=typer.colors.GREEN)
 
 
 @app.command()
 def delete(
+    ctx: typer.Context,
     task_id: Annotated[int, typer.Argument(help="ID of the task to delete")],
     force: Annotated[
         bool,
@@ -303,7 +323,7 @@ def delete(
     ] = False,
 ) -> None:
     """Delete a task (with confirmation unless --force is used)."""
-    tasks = load_tasks()
+    tasks = load_tasks(ctx)
     for i, task in enumerate(tasks):
         if task["id"] == task_id:
             if not force:
@@ -312,7 +332,7 @@ def delete(
                     typer.echo("Operation cancelled.")
                     return
             del tasks[i]
-            save_tasks(tasks)
+            save_tasks(ctx, tasks)
             typer.secho(f"🗑️  Task #{task_id} deleted", fg=typer.colors.GREEN)
             return
 
