@@ -1,9 +1,9 @@
 """Taskly - Professional todo-list CLI built with Typer.
 
 Fully typed for basedpyright "recommended" mode.
-- Added 'finished' field (YYYY-MM-DD) recorded when task is completed
-- Added --sort option to list: due, finished, priority (HIGH to LOW)
-- Sorting is now robust against None dates using tuple keys (stable, no TypeError)
+- 'finished' field (YYYY-MM-DD) recorded when task is completed
+- --sort due / finished / priority (HIGH to LOW)
+- "Completed" column only shown when listing completed or all tasks
 """
 
 from __future__ import annotations
@@ -71,11 +71,6 @@ class DataDirContext(TypedDict):
 
     data_dir: Path
 
-def version_callback(value: bool) -> None:
-    """Print version and exit when --version is used."""
-    if value:
-        typer.echo(f"taskly {__version__}")
-        raise typer.Exit()
 
 def get_db_path(ctx: typer.Context) -> Path:
     """Return path to the JSON database using data_dir from ctx.obj."""
@@ -151,13 +146,20 @@ def _date_key(date_str: str | None) -> date | None:
 def due_key(task: Task) -> tuple[int, date | None]:
     """Sort key for due: None values last, then earliest date first."""
     d = _date_key(task["due"])
-    return (1 if d is None else 0, d)  # None last
+    return (1 if d is None else 0, d)
 
 
 def finished_key(task: Task) -> tuple[int, date | None]:
-    """Sort key for finished: None values last, then most recent first (reverse)."""
+    """Sort key for finished: None values last, then most recent first (when reversed)."""
     d = _date_key(task["finished"])
-    return (1 if d is None else 0, d)  # None last
+    return (1 if d is None else 0, d)
+
+
+def version_callback(value: bool) -> None:
+    """Print version and exit when --version is used."""
+    if value:
+        typer.echo(f"taskly {__version__}")
+        raise typer.Exit()
 
 
 @app.callback()
@@ -187,10 +189,6 @@ def main(
     """Taskly CLI entry point with global --data-dir support."""
     ctx.obj = {"data_dir": data_dir or Path(typer.get_app_dir("taskly"))}
 
-@app.command()
-def version() -> None:
-    """Show the version of taskly."""
-    typer.echo(f"taskly {__version__}")
 
 @app.command()
 def add(
@@ -269,7 +267,10 @@ def list(
         ),
     ] = None,
 ) -> None:
-    """List tasks with optional filters and sorting."""
+    """List tasks with optional filters and sorting.
+    
+    The 'Completed' column is only shown when viewing completed or all tasks.
+    """
     tasks = load_tasks(ctx)
 
     # Apply filters
@@ -300,7 +301,12 @@ def list(
     table.add_column("Description", style="green")
     table.add_column("Priority", justify="center")
     table.add_column("Due", justify="center")
-    table.add_column("Finished", justify="center")
+
+    # Only show "Completed" column when listing completed or all tasks
+    show_completed_column = status in (Status.COMPLETED, Status.ALL)
+    if show_completed_column:
+        table.add_column("Completed", justify="center")
+
     table.add_column("Status", justify="center")
 
     priority_colors = {"low": "blue", "medium": "yellow", "high": "red"}
@@ -309,21 +315,24 @@ def list(
         status_icon = "✅" if t["completed"] else "⏳"
         prio_color = priority_colors.get(t["priority"], "")
         due_str = t["due"] or "—"
-        finished_str = t["finished"] or "—"
 
-        table.add_row(
+        row = [
             str(t["id"]),
             t["description"],
             f"[{prio_color}]{t['priority'].upper()}[/{prio_color}]",
             due_str,
-            finished_str,
-            status_icon,
-        )
+        ]
+
+        if show_completed_column:
+            completed_str = t["finished"] or "—"
+            row.append(completed_str)
+
+        row.append(status_icon)
+        table.add_row(*row)
 
     console.print(table)
 
 
-# complete, edit, delete commands remain unchanged from previous version
 @app.command()
 def complete(
     ctx: typer.Context,
@@ -361,30 +370,14 @@ def edit(
 
     typer.secho(f"Editing task #{task_id}: {task['description']}", fg=typer.colors.CYAN)
 
-    # Edit description
-    new_description = typer.prompt(
-        "Description",
-        default=task["description"],
-        show_default=True,
-    )
+    new_description = typer.prompt("Description", default=task["description"], show_default=True)
     task["description"] = new_description
 
-    # Edit priority
-    new_priority = typer.prompt(
-        "Priority",
-        default=task["priority"],
-        type=Priority,
-        show_default=True,
-    )
+    new_priority = typer.prompt("Priority", default=task["priority"], type=Priority, show_default=True)
     task["priority"] = new_priority.value
 
-    # Edit due date
     current_due = task["due"] or ""
-    new_due = typer.prompt(
-        "Due date (YYYY-MM-DD or leave empty)",
-        default=current_due,
-        show_default=True,
-    )
+    new_due = typer.prompt("Due date (YYYY-MM-DD or leave empty)", default=current_due, show_default=True)
     if new_due.strip() == "":
         task["due"] = None
     else:
@@ -394,7 +387,6 @@ def edit(
         except ValueError:
             typer.secho("Warning: Invalid due date format. Keeping previous value.", fg=typer.colors.YELLOW)
 
-    # Edit completion status
     current_completed = task["completed"]
     new_completed = typer.confirm("Mark as completed?", default=current_completed)
 
