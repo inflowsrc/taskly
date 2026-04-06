@@ -1,15 +1,14 @@
 """Taskly - Professional todo-list CLI built with Typer.
 
-This module demonstrates industry-best practices for Typer CLIs:
-- Fully typed with Annotated
-- Global --data-dir option stored in ctx.obj (standard Typer pattern)
-- Context injection uses bare `ctx: typer.Context` for full compatibility with typer.testing
+Fully typed for basedpyright "recommended" mode.
+- Uses TypedDicts instead of Any
+- ctx.obj is properly typed via cast
+- Global --data-dir support
 - Rich console output with tables
 - Persistent JSON storage
 - Enums for constrained choices
 - Interactive editing with typer.prompt/confirm
-- Version callback, confirmations, and proper error handling
-- 100% basedpyright-compatible (recommended mode)
+- 100% compatible with typer.testing.CliRunner
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ import json
 from datetime import date
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, TypedDict, cast
 
 import typer
 from rich.console import Console
@@ -50,37 +49,56 @@ class Status(str, Enum):
     ALL = "all"
 
 
+class Task(TypedDict):
+    """Typed structure for a single task (eliminates Any usage)."""
+
+    id: int
+    description: str
+    priority: str
+    due: str | None
+    completed: bool
+
+
+class DataDirContext(TypedDict):
+    """Type for ctx.obj (used by every command)."""
+
+    data_dir: Path
+
+
 def get_db_path(ctx: typer.Context) -> Path:
-    """Return path to the JSON database. Uses --data-dir from ctx.obj if provided."""
-    app_dir: Path = ctx.obj["data_dir"]
+    """Return path to the JSON database using data_dir from ctx.obj."""
+    context_data: DataDirContext = cast(DataDirContext, ctx.obj)
+    app_dir: Path = context_data["data_dir"]
     app_dir.mkdir(parents=True, exist_ok=True)
     return app_dir / "tasks.json"
 
 
-def load_tasks(ctx: typer.Context) -> list[dict[str, Any]]:
+def load_tasks(ctx: typer.Context) -> list[Task]:
     """Load tasks from the JSON database. Returns empty list if file doesn't exist."""
     db_path = get_db_path(ctx)
     if not db_path.exists():
         return []
     with db_path.open(encoding="utf-8") as f:
-        return json.load(f)
+        raw_tasks: list[dict[str, Any]] = json.load(f)
+        # Safe cast because we control the schema
+        return [cast(Task, t) for t in raw_tasks]
 
 
-def save_tasks(ctx: typer.Context, tasks: list[dict[str, Any]]) -> None:
+def save_tasks(ctx: typer.Context, tasks: list[Task]) -> None:
     """Save tasks to the JSON database."""
     db_path = get_db_path(ctx)
     with db_path.open("w", encoding="utf-8") as f:
         json.dump(tasks, f, indent=2, ensure_ascii=False)
 
 
-def get_next_id(tasks: list[dict[str, Any]]) -> int:
+def get_next_id(tasks: list[Task]) -> int:
     """Return the next available task ID."""
     if not tasks:
         return 1
     return max(t["id"] for t in tasks) + 1
 
 
-def find_task(tasks: list[dict[str, Any]], task_id: int) -> dict[str, Any] | None:
+def find_task(tasks: list[Task], task_id: int) -> Task | None:
     """Find a task by ID. Returns None if not found."""
     for task in tasks:
         if task["id"] == task_id:
@@ -120,7 +138,6 @@ def main(
     ] = None,
 ) -> None:
     """Taskly CLI entry point with global --data-dir support."""
-    # Store data directory in ctx.obj so every command can access it
     ctx.obj = {"data_dir": data_dir or Path(typer.get_app_dir("taskly"))}
 
 
@@ -150,7 +167,6 @@ def add(
     tasks = load_tasks(ctx)
     task_id = get_next_id(tasks)
 
-    # Validate due date if provided
     if due:
         try:
             date.fromisoformat(due)
@@ -158,7 +174,7 @@ def add(
             typer.secho("Error: --due must be in YYYY-MM-DD format", fg=typer.colors.RED)
             raise typer.Exit(1) from None
 
-    task: dict[str, Any] = {
+    task: Task = {
         "id": task_id,
         "description": description,
         "priority": priority.value,
@@ -197,12 +213,12 @@ def list(
     tasks = load_tasks(ctx)
 
     # Apply filters
-    filtered: list[dict[str, Any]] = []
+    filtered: list[Task] = []
     for t in tasks:
         if status != Status.ALL:
-            if (status == Status.PENDING) != (not t.get("completed", False)):
+            if (status == Status.PENDING) != (not t["completed"]):
                 continue
-        if priority and t.get("priority") != priority.value:
+        if priority and t["priority"] != priority.value:
             continue
         filtered.append(t)
 
@@ -220,15 +236,14 @@ def list(
     priority_colors = {"low": "blue", "medium": "yellow", "high": "red"}
 
     for t in filtered:
-        completed = t.get("completed", False)
-        status_icon = "✅" if completed else "⏳"
-        prio_color = priority_colors.get(t.get("priority", "medium"), "")
-        due_str = t.get("due") or "—"
+        status_icon = "✅" if t["completed"] else "⏳"
+        prio_color = priority_colors.get(t["priority"], "")
+        due_str = t["due"] or "—"
 
         table.add_row(
             str(t["id"]),
             t["description"],
-            f"[{prio_color}]{t.get('priority', 'medium').upper()}[/{prio_color}]",
+            f"[{prio_color}]{t['priority'].upper()}[/{prio_color}]",
             due_str,
             status_icon,
         )
@@ -248,7 +263,7 @@ def complete(
         typer.secho(f"❌ Task #{task_id} not found", fg=typer.colors.RED)
         raise typer.Exit(1)
 
-    if task.get("completed", False):
+    if task["completed"]:
         typer.secho(f"Task #{task_id} is already completed.", fg=typer.colors.YELLOW)
         return
 
@@ -282,14 +297,14 @@ def edit(
     # Edit priority
     new_priority = typer.prompt(
         "Priority",
-        default=task.get("priority", "medium"),
+        default=task["priority"],
         type=Priority,
         show_default=True,
     )
     task["priority"] = new_priority.value
 
     # Edit due date
-    current_due = task.get("due") or ""
+    current_due = task["due"] or ""
     new_due = typer.prompt(
         "Due date (YYYY-MM-DD or leave empty)",
         default=current_due,
@@ -305,8 +320,7 @@ def edit(
             typer.secho("Warning: Invalid due date format. Keeping previous value.", fg=typer.colors.YELLOW)
 
     # Edit completion status
-    current_completed = task.get("completed", False)
-    new_completed = typer.confirm("Mark as completed?", default=current_completed)
+    new_completed = typer.confirm("Mark as completed?", default=task["completed"])
     task["completed"] = new_completed
 
     save_tasks(ctx, tasks)

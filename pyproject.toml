@@ -19,7 +19,20 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/taskly"]
 
+[tool.basedpyright]
+typeCheckingMode = "recommended"
+pythonPlatform = "All"
+
+# Disable the most noisy rules coming fro Typer internals and .obj usage
+reportUnknownArgumentType = "warning"
+reportUnknownMemberType = "warning"
+reportAny = "warning"
+reportMissingTypeStubs = "none"
+reportImportCycles = "none"
+
+
 [dependency-groups]
 dev = [
+    "basedpyright>=1.39.0",
     "pytest>=9.0.2",
 ]
