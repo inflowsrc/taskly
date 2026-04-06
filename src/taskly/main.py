@@ -11,12 +11,15 @@ from __future__ import annotations
 import json
 from datetime import date
 from enum import Enum
+from importlib.metadata import version as get_package_version
 from pathlib import Path
 from typing import Annotated, Any, TypedDict, cast
 
 import typer
 from rich.console import Console
 from rich.table import Table
+
+__version__ = get_package_version("taskly")
 
 app = typer.Typer(
     name="taskly",
@@ -68,6 +71,11 @@ class DataDirContext(TypedDict):
 
     data_dir: Path
 
+def version_callback(value: bool) -> None:
+    """Print version and exit when --version is used."""
+    if value:
+        typer.echo(f"taskly {__version__}")
+        raise typer.Exit()
 
 def get_db_path(ctx: typer.Context) -> Path:
     """Return path to the JSON database using data_dir from ctx.obj."""
@@ -152,13 +160,6 @@ def finished_key(task: Task) -> tuple[int, date | None]:
     return (1 if d is None else 0, d)  # None last
 
 
-def version_callback(value: bool) -> None:
-    """Print version and exit when --version is used."""
-    if value:
-        typer.echo("taskly 0.1.0")
-        raise typer.Exit()
-
-
 @app.callback()
 def main(
     ctx: typer.Context,
@@ -186,6 +187,10 @@ def main(
     """Taskly CLI entry point with global --data-dir support."""
     ctx.obj = {"data_dir": data_dir or Path(typer.get_app_dir("taskly"))}
 
+@app.command()
+def version() -> None:
+    """Show the version of taskly."""
+    typer.echo(f"taskly {__version__}")
 
 @app.command()
 def add(
