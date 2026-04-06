@@ -1,14 +1,4 @@
 """Taskly - Professional todo-list CLI built with Typer.
-
-Fully typed for basedpyright "recommended" mode.
-- Uses TypedDicts instead of Any
-- ctx.obj is properly typed via cast
-- Global --data-dir support
-- Rich console output with tables
-- Persistent JSON storage
-- Enums for constrained choices
-- Interactive editing with typer.prompt/confirm
-- 100% compatible with typer.testing.CliRunner
 """
 
 from __future__ import annotations
@@ -50,13 +40,14 @@ class Status(str, Enum):
 
 
 class Task(TypedDict):
-    """Typed structure for a single task (eliminates Any usage)."""
+    """Typed structure for a single task."""
 
     id: int
     description: str
     priority: str
     due: str | None
     completed: bool
+    finished: str | None   # New: date when task was marked completed (YYYY-MM-DD)
 
 
 class DataDirContext(TypedDict):
@@ -74,14 +65,28 @@ def get_db_path(ctx: typer.Context) -> Path:
 
 
 def load_tasks(ctx: typer.Context) -> list[Task]:
-    """Load tasks from the JSON database. Returns empty list if file doesn't exist."""
+    """Load tasks from the JSON database. Returns empty list if file doesn't exist.
+    Old tasks without 'finished' key are automatically upgraded.
+    """
     db_path = get_db_path(ctx)
     if not db_path.exists():
         return []
     with db_path.open(encoding="utf-8") as f:
         raw_tasks: list[dict[str, Any]] = json.load(f)
-        # Safe cast because we control the schema
-        return [cast(Task, t) for t in raw_tasks]
+
+    # Migrate old tasks (backward compatibility)
+    migrated: list[Task] = []
+    for t in raw_tasks:
+        task: Task = cast(Task, {
+            "id": t["id"],
+            "description": t["description"],
+            "priority": t["priority"],
+            "due": t.get("due"),
+            "completed": t.get("completed", False),
+            "finished": t.get("finished"),
+        })
+        migrated.append(task)
+    return migrated
 
 
 def save_tasks(ctx: typer.Context, tasks: list[Task]) -> None:
@@ -180,6 +185,7 @@ def add(
         "priority": priority.value,
         "due": due,
         "completed": False,
+        "finished": None,
     }
 
     tasks.append(task)
@@ -231,6 +237,7 @@ def list(
     table.add_column("Description", style="green")
     table.add_column("Priority", justify="center")
     table.add_column("Due", justify="center")
+    table.add_column("Finished", justify="center")
     table.add_column("Status", justify="center")
 
     priority_colors = {"low": "blue", "medium": "yellow", "high": "red"}
@@ -239,12 +246,14 @@ def list(
         status_icon = "✅" if t["completed"] else "⏳"
         prio_color = priority_colors.get(t["priority"], "")
         due_str = t["due"] or "—"
+        finished_str = t["finished"] or "—"
 
         table.add_row(
             str(t["id"]),
             t["description"],
             f"[{prio_color}]{t['priority'].upper()}[/{prio_color}]",
             due_str,
+            finished_str,
             status_icon,
         )
 
@@ -256,7 +265,7 @@ def complete(
     ctx: typer.Context,
     task_id: Annotated[int, typer.Argument(help="ID of the task to mark complete")],
 ) -> None:
-    """Mark a task as completed."""
+    """Mark a task as completed and record today's date in 'finished'."""
     tasks = load_tasks(ctx)
     task = find_task(tasks, task_id)
     if task is None:
@@ -267,9 +276,11 @@ def complete(
         typer.secho(f"Task #{task_id} is already completed.", fg=typer.colors.YELLOW)
         return
 
+    today = date.today().isoformat()
     task["completed"] = True
+    task["finished"] = today
     save_tasks(ctx, tasks)
-    typer.secho(f"✅ Task #{task_id} completed", fg=typer.colors.GREEN)
+    typer.secho(f"✅ Task #{task_id} completed on {today}", fg=typer.colors.GREEN)
 
 
 @app.command()
@@ -320,7 +331,18 @@ def edit(
             typer.secho("Warning: Invalid due date format. Keeping previous value.", fg=typer.colors.YELLOW)
 
     # Edit completion status
-    new_completed = typer.confirm("Mark as completed?", default=task["completed"])
+    current_completed = task["completed"]
+    new_completed = typer.confirm("Mark as completed?", default=current_completed)
+
+    if new_completed and not current_completed:
+        # Newly completed → record today's date
+        today = date.today().isoformat()
+        task["finished"] = today
+        typer.secho(f"Task marked completed on {today}", fg=typer.colors.GREEN)
+    elif not new_completed and current_completed:
+        # Un-completed → clear finished date
+        task["finished"] = None
+
     task["completed"] = new_completed
 
     save_tasks(ctx, tasks)
