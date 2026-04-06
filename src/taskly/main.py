@@ -1,9 +1,9 @@
 """Taskly - Professional todo-list CLI built with Typer.
 
 Fully typed for basedpyright "recommended" mode.
-- 'finished' field (YYYY-MM-DD) recorded when task is completed
-- --sort due / finished / priority (HIGH to LOW)
-- "Completed" column only shown when listing completed or all tasks
+- Added 'started' field (date task was created)
+- 'Completed' column only shown when viewing completed or all tasks
+- Default sorting: due date (earliest first) then priority (HIGH → LOW)
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from enum import Enum
-from importlib.metadata import version as get_package_version
+from importlib.metadata import PackageNotFoundError, version as get_package_version
 from pathlib import Path
 from typing import Annotated, Any, TypedDict, cast
 
@@ -19,7 +19,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-__version__ = get_package_version("taskly")
+# Single source of truth for version
+try:
+    __version__ = get_package_version("taskly")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
 
 app = typer.Typer(
     name="taskly",
@@ -62,8 +66,9 @@ class Task(TypedDict):
     description: str
     priority: str
     due: str | None
+    started: str          # Date task was added (YYYY-MM-DD)
     completed: bool
-    finished: str | None   # YYYY-MM-DD when completed
+    finished: str | None  # Date task was completed (YYYY-MM-DD)
 
 
 class DataDirContext(TypedDict):
@@ -82,7 +87,7 @@ def get_db_path(ctx: typer.Context) -> Path:
 
 def load_tasks(ctx: typer.Context) -> list[Task]:
     """Load tasks from the JSON database. Returns empty list if file doesn't exist.
-    Old tasks without 'finished' key are automatically upgraded.
+    Old tasks are automatically migrated with default values.
     """
     db_path = get_db_path(ctx)
     if not db_path.exists():
@@ -92,12 +97,14 @@ def load_tasks(ctx: typer.Context) -> list[Task]:
 
     # Migrate old tasks (backward compatibility)
     migrated: list[Task] = []
+    today = date.today().isoformat()
     for t in raw_tasks:
         task: Task = cast(Task, {
             "id": t["id"],
             "description": t["description"],
             "priority": t["priority"],
             "due": t.get("due"),
+            "started": t.get("started", today),           # migrate old tasks
             "completed": t.get("completed", False),
             "finished": t.get("finished"),
         })
@@ -128,7 +135,7 @@ def find_task(tasks: list[Task], task_id: int) -> Task | None:
 
 
 def priority_key(task: Task) -> int:
-    """Return numeric priority for sorting: HIGH=3, MEDIUM=2, LOW=1 (descending)."""
+    """Return numeric priority for sorting: HIGH=3, MEDIUM=2, LOW=1."""
     order = {"high": 3, "medium": 2, "low": 1}
     return order.get(task["priority"], 0)
 
@@ -149,8 +156,13 @@ def due_key(task: Task) -> tuple[int, date | None]:
     return (1 if d is None else 0, d)
 
 
+def started_key(task: Task) -> date:
+    """Sort key for started date (always present)."""
+    return _date_key(task["started"]) or date.min   # fallback, should never happen
+
+
 def finished_key(task: Task) -> tuple[int, date | None]:
-    """Sort key for finished: None values last, then most recent first (when reversed)."""
+    """Sort key for finished: None values last."""
     d = _date_key(task["finished"])
     return (1 if d is None else 0, d)
 
@@ -212,7 +224,7 @@ def add(
         ),
     ] = None,
 ) -> None:
-    """Add a new task."""
+    """Add a new task. Automatically records today's date as 'started'."""
     tasks = load_tasks(ctx)
     task_id = get_next_id(tasks)
 
@@ -223,11 +235,14 @@ def add(
             typer.secho("Error: --due must be in YYYY-MM-DD format", fg=typer.colors.RED)
             raise typer.Exit(1) from None
 
+    today = date.today().isoformat()
+
     task: Task = {
         "id": task_id,
         "description": description,
         "priority": priority.value,
         "due": due,
+        "started": today,
         "completed": False,
         "finished": None,
     }
@@ -235,7 +250,7 @@ def add(
     tasks.append(task)
     save_tasks(ctx, tasks)
 
-    typer.secho(f"✅ Task #{task_id} added", fg=typer.colors.GREEN)
+    typer.secho(f"✅ Task #{task_id} added (started {today})", fg=typer.colors.GREEN)
 
 
 @app.command()
@@ -269,7 +284,8 @@ def list(
 ) -> None:
     """List tasks with optional filters and sorting.
     
-    The 'Completed' column is only shown when viewing completed or all tasks.
+    Default sort: due date (earliest first) then priority (HIGH → LOW).
+    'Completed' column only shown when viewing completed or all tasks.
     """
     tasks = load_tasks(ctx)
 
@@ -287,13 +303,16 @@ def list(
         typer.echo("No tasks found.")
         return
 
-    # Apply sorting with safe keys
-    if sort_by == SortBy.DUE:
+    # Default sorting: due date → priority (HIGH to LOW)
+    if sort_by is None:
+        # Primary: due, Secondary: priority
+        filtered.sort(key=lambda t: (due_key(t), priority_key(t)))
+    elif sort_by == SortBy.DUE:
         filtered.sort(key=due_key)
     elif sort_by == SortBy.FINISHED:
-        filtered.sort(key=finished_key, reverse=True)  # most recent first
+        filtered.sort(key=finished_key, reverse=True)
     elif sort_by == SortBy.PRIORITY:
-        filtered.sort(key=priority_key, reverse=True)  # HIGH → LOW
+        filtered.sort(key=priority_key, reverse=True)
 
     # Build table
     table = Table(title="Taskly — Your Tasks", show_header=True)
@@ -301,8 +320,9 @@ def list(
     table.add_column("Description", style="green")
     table.add_column("Priority", justify="center")
     table.add_column("Due", justify="center")
+    table.add_column("Started", justify="center")
 
-    # Only show "Completed" column when listing completed or all tasks
+    # Only show "Completed" column when relevant
     show_completed_column = status in (Status.COMPLETED, Status.ALL)
     if show_completed_column:
         table.add_column("Completed", justify="center")
@@ -315,16 +335,18 @@ def list(
         status_icon = "✅" if t["completed"] else "⏳"
         prio_color = priority_colors.get(t["priority"], "")
         due_str = t["due"] or "—"
+        started_str = t["started"]
+        completed_str = t.get("finished") or "—" if show_completed_column else None
 
         row = [
             str(t["id"]),
             t["description"],
             f"[{prio_color}]{t['priority'].upper()}[/{prio_color}]",
             due_str,
+            started_str,
         ]
 
         if show_completed_column:
-            completed_str = t["finished"] or "—"
             row.append(completed_str)
 
         row.append(status_icon)
@@ -361,7 +383,7 @@ def edit(
     ctx: typer.Context,
     task_id: Annotated[int, typer.Argument(help="ID of the task to edit")],
 ) -> None:
-    """Interactively edit an existing task (description, priority, due date, or status)."""
+    """Interactively edit an existing task."""
     tasks = load_tasks(ctx)
     task = find_task(tasks, task_id)
     if task is None:
