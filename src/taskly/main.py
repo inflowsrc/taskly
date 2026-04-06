@@ -1,9 +1,4 @@
 """Taskly - Professional todo-list CLI built with Typer.
-
-Fully typed for basedpyright "recommended" mode.
-- Added 'started' field (date task was created)
-- 'Completed' column only shown when viewing completed or all tasks
-- Default sorting: due date (earliest first) then priority (HIGH → LOW)
 """
 
 from __future__ import annotations
@@ -66,9 +61,9 @@ class Task(TypedDict):
     description: str
     priority: str
     due: str | None
-    started: str          # Date task was added (YYYY-MM-DD)
+    started: str                    # Date task was added (YYYY-MM-DD)
     completed: bool
-    finished: str | None  # Date task was completed (YYYY-MM-DD)
+    finished: str | None            # Date task was completed (YYYY-MM-DD)
 
 
 class DataDirContext(TypedDict):
@@ -104,7 +99,7 @@ def load_tasks(ctx: typer.Context) -> list[Task]:
             "description": t["description"],
             "priority": t["priority"],
             "due": t.get("due"),
-            "started": t.get("started", today),           # migrate old tasks
+            "started": t.get("started", today),
             "completed": t.get("completed", False),
             "finished": t.get("finished"),
         })
@@ -156,11 +151,6 @@ def due_key(task: Task) -> tuple[int, date | None]:
     return (1 if d is None else 0, d)
 
 
-def started_key(task: Task) -> date:
-    """Sort key for started date (always present)."""
-    return _date_key(task["started"]) or date.min   # fallback, should never happen
-
-
 def finished_key(task: Task) -> tuple[int, date | None]:
     """Sort key for finished: None values last."""
     d = _date_key(task["finished"])
@@ -177,26 +167,8 @@ def version_callback(value: bool) -> None:
 @app.callback()
 def main(
     ctx: typer.Context,
-    version: Annotated[
-        bool,
-        typer.Option(
-            "--version",
-            "-V",
-            callback=version_callback,
-            is_eager=True,
-            help="Show version and exit.",
-        ),
-    ] = False,
-    data_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--data-dir",
-            help="Custom directory for tasks.json storage (defaults to user app dir)",
-            file_okay=False,
-            dir_okay=True,
-            resolve_path=True,
-        ),
-    ] = None,
+    version: Annotated[bool, typer.Option("--version", "-V", callback=version_callback, is_eager=True, help="Show version and exit.")] = False,
+    data_dir: Annotated[Path | None, typer.Option("--data-dir", help="Custom directory for tasks.json storage (defaults to user app dir)", file_okay=False, dir_okay=True, resolve_path=True)] = None,
 ) -> None:
     """Taskly CLI entry point with global --data-dir support."""
     ctx.obj = {"data_dir": data_dir or Path(typer.get_app_dir("taskly"))}
@@ -206,23 +178,8 @@ def main(
 def add(
     ctx: typer.Context,
     description: Annotated[str, typer.Argument(help="Task description")],
-    priority: Annotated[
-        Priority,
-        typer.Option(
-            "--priority",
-            "-p",
-            help="Task priority",
-            case_sensitive=False,
-        ),
-    ] = Priority.MEDIUM,
-    due: Annotated[
-        str | None,
-        typer.Option(
-            "--due",
-            "-d",
-            help="Due date in YYYY-MM-DD format",
-        ),
-    ] = None,
+    priority: Annotated[Priority, typer.Option("--priority", "-p", help="Task priority", case_sensitive=False)] = Priority.MEDIUM,
+    due: Annotated[str | None, typer.Option("--due", "-d", help="Due date in YYYY-MM-DD format")] = None,
 ) -> None:
     """Add a new task. Automatically records today's date as 'started'."""
     tasks = load_tasks(ctx)
@@ -256,34 +213,12 @@ def add(
 @app.command()
 def list(
     ctx: typer.Context,
-    status: Annotated[
-        Status,
-        typer.Option(
-            "--status",
-            "-s",
-            help="Filter by status",
-            case_sensitive=False,
-        ),
-    ] = Status.PENDING,
-    priority: Annotated[
-        Priority | None,
-        typer.Option(
-            "--priority",
-            "-p",
-            help="Filter by priority",
-        ),
-    ] = None,
-    sort_by: Annotated[
-        SortBy | None,
-        typer.Option(
-            "--sort",
-            help="Sort tasks by: due, finished, or priority (HIGH to LOW)",
-            case_sensitive=False,
-        ),
-    ] = None,
+    status: Annotated[Status, typer.Option("--status", "-s", help="Filter by status", case_sensitive=False)] = Status.PENDING,
+    priority: Annotated[Priority | None, typer.Option("--priority", "-p", help="Filter by priority")] = None,
+    sort_by: Annotated[SortBy | None, typer.Option("--sort", help="Sort tasks by: due, finished, or priority (HIGH to LOW)", case_sensitive=False)] = None,
 ) -> None:
     """List tasks with optional filters and sorting.
-    
+
     Default sort: due date (earliest first) then priority (HIGH → LOW).
     'Completed' column only shown when viewing completed or all tasks.
     """
@@ -305,7 +240,6 @@ def list(
 
     # Default sorting: due date → priority (HIGH to LOW)
     if sort_by is None:
-        # Primary: due, Secondary: priority
         filtered.sort(key=lambda t: (due_key(t), priority_key(t)))
     elif sort_by == SortBy.DUE:
         filtered.sort(key=due_key)
@@ -322,7 +256,6 @@ def list(
     table.add_column("Due", justify="center")
     table.add_column("Started", justify="center")
 
-    # Only show "Completed" column when relevant
     show_completed_column = status in (Status.COMPLETED, Status.ALL)
     if show_completed_column:
         table.add_column("Completed", justify="center")
@@ -336,9 +269,8 @@ def list(
         prio_color = priority_colors.get(t["priority"], "")
         due_str = t["due"] or "—"
         started_str = t["started"]
-        completed_str = t.get("finished") or "—" if show_completed_column else None
 
-        row = [
+        row: list[str] = [
             str(t["id"]),
             t["description"],
             f"[{prio_color}]{t['priority'].upper()}[/{prio_color}]",
@@ -347,6 +279,7 @@ def list(
         ]
 
         if show_completed_column:
+            completed_str = t["finished"] or "—"
             row.append(completed_str)
 
         row.append(status_icon)
@@ -392,14 +325,14 @@ def edit(
 
     typer.secho(f"Editing task #{task_id}: {task['description']}", fg=typer.colors.CYAN)
 
-    new_description = typer.prompt("Description", default=task["description"], show_default=True)
+    new_description: str = typer.prompt("Description", default=task["description"], show_default=True)
     task["description"] = new_description
 
-    new_priority = typer.prompt("Priority", default=task["priority"], type=Priority, show_default=True)
+    new_priority: Priority = typer.prompt("Priority", default=task["priority"], type=Priority, show_default=True)
     task["priority"] = new_priority.value
 
     current_due = task["due"] or ""
-    new_due = typer.prompt("Due date (YYYY-MM-DD or leave empty)", default=current_due, show_default=True)
+    new_due: str = typer.prompt("Due date (YYYY-MM-DD or leave empty)", default=current_due, show_default=True)
     if new_due.strip() == "":
         task["due"] = None
     else:
@@ -410,7 +343,7 @@ def edit(
             typer.secho("Warning: Invalid due date format. Keeping previous value.", fg=typer.colors.YELLOW)
 
     current_completed = task["completed"]
-    new_completed = typer.confirm("Mark as completed?", default=current_completed)
+    new_completed: bool = typer.confirm("Mark as completed?", default=current_completed)
 
     if new_completed and not current_completed:
         today = date.today().isoformat()
@@ -429,10 +362,7 @@ def edit(
 def delete(
     ctx: typer.Context,
     task_id: Annotated[int, typer.Argument(help="ID of the task to delete")],
-    force: Annotated[
-        bool,
-        typer.Option("--force", "-f", help="Skip confirmation"),
-    ] = False,
+    force: Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation")] = False,
 ) -> None:
     """Delete a task (with confirmation unless --force is used)."""
     tasks = load_tasks(ctx)
