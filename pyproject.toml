@@ -9,7 +9,6 @@ dependencies = [
     "typer>=0.24.1",
 ]
 license = {text = "MIT"}
-readme = "README.md"
 
 [project.scripts]
 taskly = "taskly.main:app"
