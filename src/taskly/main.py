@@ -1,4 +1,9 @@
 """Taskly - Professional todo-list CLI built with Typer.
+
+Fully typed for basedpyright "recommended" mode.
+- Added 'finished' field (YYYY-MM-DD) recorded when task is completed
+- Added --sort option to list: due, finished, priority (HIGH to LOW)
+- Sorting is now robust against None dates using tuple keys (stable, no TypeError)
 """
 
 from __future__ import annotations
@@ -39,6 +44,14 @@ class Status(str, Enum):
     ALL = "all"
 
 
+class SortBy(str, Enum):
+    """Available sort options for the list command."""
+
+    DUE = "due"
+    FINISHED = "finished"
+    PRIORITY = "priority"
+
+
 class Task(TypedDict):
     """Typed structure for a single task."""
 
@@ -47,7 +60,7 @@ class Task(TypedDict):
     priority: str
     due: str | None
     completed: bool
-    finished: str | None   # New: date when task was marked completed (YYYY-MM-DD)
+    finished: str | None   # YYYY-MM-DD when completed
 
 
 class DataDirContext(TypedDict):
@@ -109,6 +122,34 @@ def find_task(tasks: list[Task], task_id: int) -> Task | None:
         if task["id"] == task_id:
             return task
     return None
+
+
+def priority_key(task: Task) -> int:
+    """Return numeric priority for sorting: HIGH=3, MEDIUM=2, LOW=1 (descending)."""
+    order = {"high": 3, "medium": 2, "low": 1}
+    return order.get(task["priority"], 0)
+
+
+def _date_key(date_str: str | None) -> date | None:
+    """Safely convert ISO date string to date object."""
+    if not date_str:
+        return None
+    try:
+        return date.fromisoformat(date_str)
+    except ValueError:
+        return None
+
+
+def due_key(task: Task) -> tuple[int, date | None]:
+    """Sort key for due: None values last, then earliest date first."""
+    d = _date_key(task["due"])
+    return (1 if d is None else 0, d)  # None last
+
+
+def finished_key(task: Task) -> tuple[int, date | None]:
+    """Sort key for finished: None values last, then most recent first (reverse)."""
+    d = _date_key(task["finished"])
+    return (1 if d is None else 0, d)  # None last
 
 
 def version_callback(value: bool) -> None:
@@ -214,8 +255,16 @@ def list(
             help="Filter by priority",
         ),
     ] = None,
+    sort_by: Annotated[
+        SortBy | None,
+        typer.Option(
+            "--sort",
+            help="Sort tasks by: due, finished, or priority (HIGH to LOW)",
+            case_sensitive=False,
+        ),
+    ] = None,
 ) -> None:
-    """List tasks with optional filters. Use --status completed to show completed tasks."""
+    """List tasks with optional filters and sorting."""
     tasks = load_tasks(ctx)
 
     # Apply filters
@@ -232,6 +281,15 @@ def list(
         typer.echo("No tasks found.")
         return
 
+    # Apply sorting with safe keys
+    if sort_by == SortBy.DUE:
+        filtered.sort(key=due_key)
+    elif sort_by == SortBy.FINISHED:
+        filtered.sort(key=finished_key, reverse=True)  # most recent first
+    elif sort_by == SortBy.PRIORITY:
+        filtered.sort(key=priority_key, reverse=True)  # HIGH → LOW
+
+    # Build table
     table = Table(title="Taskly — Your Tasks", show_header=True)
     table.add_column("ID", justify="right", style="cyan")
     table.add_column("Description", style="green")
@@ -260,6 +318,7 @@ def list(
     console.print(table)
 
 
+# complete, edit, delete commands remain unchanged from previous version
 @app.command()
 def complete(
     ctx: typer.Context,
@@ -335,12 +394,10 @@ def edit(
     new_completed = typer.confirm("Mark as completed?", default=current_completed)
 
     if new_completed and not current_completed:
-        # Newly completed → record today's date
         today = date.today().isoformat()
         task["finished"] = today
         typer.secho(f"Task marked completed on {today}", fg=typer.colors.GREEN)
     elif not new_completed and current_completed:
-        # Un-completed → clear finished date
         task["finished"] = None
 
     task["completed"] = new_completed
