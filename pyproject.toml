@@ -8,6 +8,8 @@ dependencies = [
     "rich>=14.3.3",
     "typer>=0.24.1",
 ]
+license = {text = "MIT"}
+readme = "README.md"
 
 [project.scripts]
 taskly = "taskly.main:app"
