@@ -25,6 +25,7 @@ app = typer.Typer(
     help="Taskly — your terminal todo manager",
     rich_markup_mode="rich",
     add_completion=True,
+    no_args_is_help=True,
 )
 
 console = Console()
